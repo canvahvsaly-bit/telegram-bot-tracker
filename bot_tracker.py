@@ -9,22 +9,37 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import schedule
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import google.generativeai as genai
 
-# ==================== CẤU HÌNH THÔNG TIN ====================
-TOKEN = "8998865332:AAGAKEQ94VibKBMeYFZOyjieX7k8m6E8m0k"
+# ==================== THÔNG TIN CỦA BẠN (ĐÃ ĐIỀN ĐẦY ĐỦ) ====================
+TELEGRAM_TOKEN = "8998865332:AAGAKEQ94VibKBMeYFZOyjieX7k8m6E8m0k"
 MY_CHAT_ID = 5693795211
 SHEET_ID = "1IlNNxjZaqPzGObPXgkB6UQ7VAC9aBiDr5qDV_3yxksE"
 DEFAULT_TAB = "Tracker 2"
-# ============================================================
 
-bot = telebot.TeleBot(TOKEN)
+# Mã Gemini API Key của bạn
+GEMINI_API_KEY = "AQ.Ab8RN6K8UU8NbX_SEvd51u2rgm3FaRWcCYES-t_t8FRJCuBnow"
+# ==============================================================================
 
-# Máy chủ web giả lập để Render giữ bot luôn sống
+# Cấu hình AI Gemini
+genai.configure(api_key=GEMINI_API_KEY)
+ai_model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash",
+    system_instruction=(
+        "Bạn là một trợ lý thông minh, ấm áp và tinh tế trên Telegram. "
+        "Nhiệm vụ của bạn là đồng hành cùng người dùng trong việc phát triển bản thân, "
+        "vượt qua thói quen trì hoãn, cai dopamine rẻ tiền, học tập và trả lời các thắc mắc một cách súc tích, thực tế, dễ hiểu."
+    )
+)
+
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
+# Máy chủ giữ kết nối 24/7 cho Render
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot Telegram Tracker is running 24/7!")
+        self.wfile.write(b"Bot 2-in-1 is running 24/7!")
 
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
@@ -50,7 +65,7 @@ def get_content_from_sheet(tab_name):
                 data.append((content, btn_label))
         return data
     except Exception as e:
-        print(f"Lỗi: {e}")
+        print(f"Lỗi Sheet: {e}")
         return None
 
 def safe_send_message(chat_id, text, reply_markup=None):
@@ -88,17 +103,20 @@ def send_sheet_step(chat_id, tab_name, step_index):
 
     safe_send_message(chat_id, content, reply_markup=markup)
 
+# Xử lý nút bấm đọc tiếp
 @bot.callback_query_handler(func=lambda call: call.data.startswith("read:"))
 def handle_next_step(call):
     _, tab_name, next_step = call.data.split(":", 2)
     send_sheet_step(call.message.chat.id, tab_name, int(next_step))
     bot.answer_callback_query(call.id)
 
+# Lệnh đọc bài mặc định
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     safe_send_message(message.chat.id, f"📖 *BẮT ĐẦU BÀI ĐỌC: {DEFAULT_TAB}*")
     send_sheet_step(message.chat.id, DEFAULT_TAB, 0)
 
+# Lệnh mở tab bất kỳ
 @bot.message_handler(commands=['doc'])
 def cmd_doc(message):
     args = message.text.split(maxsplit=1)
@@ -109,9 +127,20 @@ def cmd_doc(message):
     else:
         safe_send_message(message.chat.id, "💡 Gõ `/doc <Tên_Tab>` để mở bài.")
 
+# 👉 TÍNH NĂNG TRÒ CHUYỆN THÔNG MINH VỚI GEMINI AI
 @bot.message_handler(func=lambda msg: True)
-def echo_all(message):
-    bot.reply_to(message, "Gõ /start để đọc bài nhé!")
+def chat_with_gemini(message):
+    # Hiển thị trạng thái "đang soạn tin nhắn..." trên Telegram
+    bot.send_chat_action(message.chat.id, 'typing')
+    
+    user_question = message.text.strip()
+    try:
+        response = ai_model.generate_content(user_question)
+        ai_reply = response.text.strip()
+        safe_send_message(message.chat.id, ai_reply)
+    except Exception as e:
+        print(f"Lỗi AI: {e}")
+        safe_send_message(message.chat.id, "🤖 AI tạm thời chưa trả lời được, bạn thử gửi lại câu hỏi nhé!")
 
 def daily_job():
     safe_send_message(MY_CHAT_ID, f"⏰ *21h00 rồi! Dành 3 phút nạp bài học tối nay nhé:*")
@@ -124,18 +153,15 @@ def run_scheduler():
         time.sleep(30)
 
 if __name__ == "__main__":
-    print(f"✅ Bot '{DEFAULT_TAB}' đang chạy...")
+    print(f"✅ Bot Trợ lý 2 trong 1 (Sheet + Gemini AI) đang chạy...")
     bot.remove_webhook()
     
-    # 1. Chạy Web Server giữ kết nối cho Render
     t_web = threading.Thread(target=run_dummy_server)
     t_web.daemon = True
     t_web.start()
 
-    # 2. Chạy bộ hẹn giờ 21h00
     t_sched = threading.Thread(target=run_scheduler)
     t_sched.daemon = True
     t_sched.start()
     
-    # 3. Lắng nghe tin nhắn từ Telegram
     bot.infinity_polling()

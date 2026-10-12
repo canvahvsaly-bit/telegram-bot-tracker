@@ -1,3 +1,4 @@
 pyTelegramBotAPI
 schedule
 requests
+google-generativeai

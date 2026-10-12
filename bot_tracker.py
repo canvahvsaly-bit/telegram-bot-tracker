@@ -17,8 +17,8 @@ MY_CHAT_ID = 5693795211
 SHEET_ID = "1IlNNxjZaqPzGObPXgkB6UQ7VAC9aBiDr5qDV_3yxksE"
 DEFAULT_TAB = "Tracker 2"
 
-# Mã Gemini API Key của bạn
-GEMINI_API_KEY = "AQ.Ab8RN6K8UU8NbX_SEvd51u2rgm3FaRWcCYES-t_t8FRJCuBnow"
+# Mã Gemini API Key (Render sẽ tự nạp vào)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 # ==============================================================================
 
 # Cấu hình AI Gemini

@@ -12,7 +12,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from collections import defaultdict, deque
 
 # ==================== CẤU HÌNH THÔNG TIN ====================
-TELEGRAM_TOKEN = "8998865332:AAGAKEQ94VibKBMeYFZOyjieX7k8m6E8m0k"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 MY_CHAT_ID = 5693795211
 SHEET_ID = "1IlNNxjZaqPzGObPXgkB6UQ7VAC9aBiDr5qDV_3yxksE"
 DEFAULT_TAB = "Tracker 2"

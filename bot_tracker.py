@@ -22,14 +22,14 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-# Hàm gọi Gemini AI trực tiếp qua REST API (Tương thích 100% với khóa AQ.)
+# Hàm gọi Gemini AI trực tiếp qua REST API (Chuẩn thế hệ Gemini 3.8 mới nhất)
 def ask_gemini(prompt):
     if not GEMINI_API_KEY:
         return "❌ Lỗi: Chưa nhận được GEMINI_API_KEY từ Render Environment!"
     
-    # Hỗ trợ cả 2 mô hình mới nhất của Google
-    models = ["gemini-3.8-flash", "gemini-2.5-flash"]
-    last_error = ""
+    # Chỉ dùng các model thế hệ 3.x đang hoạt động (ĐÃ XÓA BỎ 2.5)
+    models = ["gemini-3.8-flash", "gemini-3.6-flash"]
+    error_details = []
 
     for model_name in models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
@@ -48,14 +48,21 @@ def ask_gemini(prompt):
             res = requests.post(url, headers=headers, json=payload, timeout=30)
             data = res.json()
             if res.status_code == 200:
-                return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                # Trích xuất văn bản trả lời thực tế (bỏ qua thinking block ngầm của 3.8)
+                reply_texts = [p.get("text", "") for p in parts if not p.get("thought", False)]
+                if not reply_texts:
+                    reply_texts = [p.get("text", "") for p in parts]
+                answer = "".join(reply_texts).strip()
+                if answer:
+                    return answer
             else:
-                last_error = data.get("error", {}).get("message", res.text)
+                err_msg = data.get("error", {}).get("message", res.text)
+                error_details.append(f"{model_name} (HTTP {res.status_code}): {err_msg}")
         except Exception as e:
-            last_error = str(e)
+            error_details.append(f"{model_name}: {e}")
 
-    return f"❌ Lỗi từ Google AI: {last_error}"
-
+    return "❌ Lỗi từ Google AI:\n" + "\n".join(error_details)
 # Máy chủ web giữ kết nối 24/7 cho Render
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):

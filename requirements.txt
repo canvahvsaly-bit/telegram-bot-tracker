@@ -1,3 +1,7 @@
 pyTelegramBotAPI
 schedule
 requests
+openpyxl
+pypdf
+python-docx
+beautifulsoup4

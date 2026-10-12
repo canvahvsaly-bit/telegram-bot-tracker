@@ -24,7 +24,7 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 group_history = defaultdict(lambda: deque(maxlen=100))
 BOT_USERNAME = ""
 
-# ----------------- HÀM GỌI GEMINI AI VỚI 4 API KEY LUÂN CHUYỂN -----------------
+# ----------------- HÀM GỌI GEMINI AI TỐI ƯU KHÔNG BỊ NGHẼN -----------------
 def ask_gemini(prompt):
     raw_keys = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEYS", "")
     api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
@@ -32,10 +32,11 @@ def ask_gemini(prompt):
     if not api_keys:
         return "❌ Lỗi: Chưa cấu hình GEMINI_API_KEY trong Render Environment!"
 
-    models = ["gemini-3.8-flash", "gemini-3.6-flash"]
+    # Đưa 3.6-flash lên đầu để tránh nghẽn, dự phòng thêm 3.8-flash
+    models = ["gemini-3.6-flash", "gemini-3.8-flash"]
     error_logs = []
 
-    # Luân chuyển qua từng API Key (Tối đa 4 Project)
+    # Thử lần lượt từng Key và từng Model
     for key_index, current_key in enumerate(api_keys, 1):
         for model_name in models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={current_key}"
@@ -48,7 +49,7 @@ def ask_gemini(prompt):
                 res = requests.post(url, headers=headers, json=payload, timeout=35)
                 data = res.json()
                 
-                # Gọi thành công 200
+                # Trả lời thành công
                 if res.status_code == 200:
                     parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
                     reply_texts = [p.get("text", "") for p in parts if not p.get("thought", False)]
@@ -58,16 +59,14 @@ def ask_gemini(prompt):
                     if answer:
                         return answer
 
-                # Nếu bị nghẽn (503) hoặc hết hạn mức (429) -> thử key tiếp theo
+                # Nếu bị lỗi (503 nghẽn hoặc 429 quá tải), ghi nhận lỗi và tiếp tục thử model khác
                 err_msg = data.get("error", {}).get("message", res.text)
                 error_logs.append(f"Key #{key_index} ({model_name} - HTTP {res.status_code}): {err_msg}")
-                if res.status_code in [429, 503]:
-                    break  # Chuyển ngay sang API Key tiếp theo
 
             except Exception as e:
                 error_logs.append(f"Key #{key_index} ({model_name}): {e}")
 
-    return "⚠️ Toàn bộ 4 API Key đều đang bận, vui lòng thử lại sau vài giây!\nChi tiết: " + "; ".join(error_logs[-2:])
+    return "⚠️ Tất cả các mô hình và Key đều đang bận, vui lòng thử lại sau chốc lát!"
 
 # ----------------- BỘ GIẢI MÃ TÀI LIỆU (EXCEL, PDF, WORD, TXT) -----------------
 def extract_text_from_file(file_name, file_bytes):

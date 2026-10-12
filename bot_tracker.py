@@ -28,7 +28,7 @@ def ask_gemini(prompt):
         return "❌ Lỗi: Chưa nhận được GEMINI_API_KEY từ Render Environment!"
     
     # Hỗ trợ cả 2 mô hình mới nhất của Google
-    models = ["gemini-1.5-flash", "gemini-2.0-flash"]
+    models = ["gemini-3.8-flash", "gemini-2.5-flash"]
     last_error = ""
 
     for model_name in models:

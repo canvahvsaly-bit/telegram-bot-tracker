@@ -9,32 +9,54 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import schedule
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import google.generativeai as genai
 
-# ==================== THÔNG TIN CỦA BẠN (ĐÃ ĐIỀN ĐẦY ĐỦ) ====================
+# ==================== CẤU HÌNH THÔNG TIN ====================
 TELEGRAM_TOKEN = "8998865332:AAGAKEQ94VibKBMeYFZOyjieX7k8m6E8m0k"
 MY_CHAT_ID = 5693795211
 SHEET_ID = "1IlNNxjZaqPzGObPXgkB6UQ7VAC9aBiDr5qDV_3yxksE"
 DEFAULT_TAB = "Tracker 2"
 
-# Mã Gemini API Key (Render sẽ tự nạp vào)
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-# ==============================================================================
-
-# Cấu hình AI Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-ai_model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
-    system_instruction=(
-        "Bạn là một trợ lý thông minh, ấm áp và tinh tế trên Telegram. "
-        "Nhiệm vụ của bạn là đồng hành cùng người dùng trong việc phát triển bản thân, "
-        "vượt qua thói quen trì hoãn, cai dopamine rẻ tiền, học tập và trả lời các thắc mắc một cách súc tích, thực tế, dễ hiểu."
-    )
-)
+# Lấy chìa khóa từ Render Environment
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+# ============================================================
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-# Máy chủ giữ kết nối 24/7 cho Render
+# Hàm gọi Gemini AI trực tiếp qua REST API (Tương thích 100% với khóa AQ.)
+def ask_gemini(prompt):
+    if not GEMINI_API_KEY:
+        return "❌ Lỗi: Chưa nhận được GEMINI_API_KEY từ Render Environment!"
+    
+    # Hỗ trợ cả 2 mô hình mới nhất của Google
+    models = ["gemini-1.5-flash", "gemini-2.0-flash"]
+    last_error = ""
+
+    for model_name in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY
+        }
+        payload = {
+            "contents": [
+                {
+                    "parts": [{"text": prompt}]
+                }
+            ]
+        }
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=30)
+            data = res.json()
+            if res.status_code == 200:
+                return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            else:
+                last_error = data.get("error", {}).get("message", res.text)
+        except Exception as e:
+            last_error = str(e)
+
+    return f"❌ Lỗi từ Google AI: {last_error}"
+
+# Máy chủ web giữ kết nối 24/7 cho Render
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -65,7 +87,7 @@ def get_content_from_sheet(tab_name):
                 data.append((content, btn_label))
         return data
     except Exception as e:
-        print(f"Lỗi Sheet: {e}")
+        print(f"Lỗi: {e}")
         return None
 
 def safe_send_message(chat_id, text, reply_markup=None):
@@ -103,20 +125,17 @@ def send_sheet_step(chat_id, tab_name, step_index):
 
     safe_send_message(chat_id, content, reply_markup=markup)
 
-# Xử lý nút bấm đọc tiếp
 @bot.callback_query_handler(func=lambda call: call.data.startswith("read:"))
 def handle_next_step(call):
     _, tab_name, next_step = call.data.split(":", 2)
     send_sheet_step(call.message.chat.id, tab_name, int(next_step))
     bot.answer_callback_query(call.id)
 
-# Lệnh đọc bài mặc định
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     safe_send_message(message.chat.id, f"📖 *BẮT ĐẦU BÀI ĐỌC: {DEFAULT_TAB}*")
     send_sheet_step(message.chat.id, DEFAULT_TAB, 0)
 
-# Lệnh mở tab bất kỳ
 @bot.message_handler(commands=['doc'])
 def cmd_doc(message):
     args = message.text.split(maxsplit=1)
@@ -127,20 +146,12 @@ def cmd_doc(message):
     else:
         safe_send_message(message.chat.id, "💡 Gõ `/doc <Tên_Tab>` để mở bài.")
 
-# 👉 TÍNH NĂNG TRÒ CHUYỆN THÔNG MINH VỚI GEMINI AI
+# 👉 CHAT TRỰC TIẾP VỚI GEMINI AI
 @bot.message_handler(func=lambda msg: True)
 def chat_with_gemini(message):
-    # Hiển thị trạng thái "đang soạn tin nhắn..." trên Telegram
     bot.send_chat_action(message.chat.id, 'typing')
-    
-    user_question = message.text.strip()
-    try:
-        response = ai_model.generate_content(user_question)
-        ai_reply = response.text.strip()
-        safe_send_message(message.chat.id, ai_reply)
-    except Exception as e:
-        print(f"Lỗi AI: {e}")
-        safe_send_message(message.chat.id, "🤖 AI tạm thời chưa trả lời được, bạn thử gửi lại câu hỏi nhé!")
+    ai_reply = ask_gemini(message.text.strip())
+    safe_send_message(message.chat.id, ai_reply)
 
 def daily_job():
     safe_send_message(MY_CHAT_ID, f"⏰ *21h00 rồi! Dành 3 phút nạp bài học tối nay nhé:*")
@@ -153,7 +164,7 @@ def run_scheduler():
         time.sleep(30)
 
 if __name__ == "__main__":
-    print(f"✅ Bot Trợ lý 2 trong 1 (Sheet + Gemini AI) đang chạy...")
+    print(f"✅ Bot Trợ lý 2 trong 1 đang chạy...")
     bot.remove_webhook()
     
     t_web = threading.Thread(target=run_dummy_server)

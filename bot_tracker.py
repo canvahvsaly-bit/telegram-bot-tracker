@@ -11,15 +11,15 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from collections import defaultdict, deque
 
-# ==================== CẤU HÌNH THÔNG TIN ====================
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+# ==================== CẤU HÌNH THÔNG TIN BẢO MẬT ====================
+# Lấy cả Token và Gemini Key từ Render Environment để bảo mật tuyệt đối
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+
 MY_CHAT_ID = 5693795211
 SHEET_ID = "1IlNNxjZaqPzGObPXgkB6UQ7VAC9aBiDr5qDV_3yxksE"
 DEFAULT_TAB = "Tracker 2"
-
-# Lấy chìa khóa từ Render Environment
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-# ============================================================
+# ====================================================================
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
@@ -27,45 +27,42 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 group_history = defaultdict(lambda: deque(maxlen=100))
 BOT_USERNAME = ""
 
-# Hàm gọi Gemini AI trực tiếp qua REST API (Gemini 3.8 Flash)
+# Hàm gọi Gemini AI có cơ chế TỰ ĐỘNG THỬ LẠI KHI NGHẼN MẠNG (Anti-503)
 def ask_gemini(prompt):
     if not GEMINI_API_KEY:
-        return "❌ Lỗi: Chưa nhận được GEMINI_API_KEY từ Render Environment!"
+        return "❌ Lỗi: Chưa cấu hình GEMINI_API_KEY trên Render!"
     
-    models = ["gemini-3.8-flash", "gemini-3.6-flash"]
-    last_error = ""
+    models = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.0-flash"]
+    
+    for attempt in range(2):  # Tự động thử lại tối đa 2 lần nếu bị 503
+        for model_name in models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+            headers = {
+                "Content-Type": "application/json",
+                "x-goog-api-key": GEMINI_API_KEY
+            }
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}]
+            }
+            try:
+                res = requests.post(url, headers=headers, json=payload, timeout=30)
+                if res.status_code == 200:
+                    data = res.json()
+                    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                    reply_texts = [p.get("text", "") for p in parts if not p.get("thought", False)]
+                    if not reply_texts:
+                        reply_texts = [p.get("text", "") for p in parts]
+                    answer = "".join(reply_texts).strip()
+                    if answer:
+                        return answer
+                elif res.status_code == 503:
+                    # Nếu Google quá tải, dừng 2 giây rồi thử lại model khác
+                    time.sleep(2)
+                    continue
+            except Exception:
+                continue
 
-    for model_name in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-        headers = {
-            "Content-Type": "application/json",
-            "x-goog-api-key": GEMINI_API_KEY
-        }
-        payload = {
-            "contents": [
-                {
-                    "parts": [{"text": prompt}]
-                }
-            ]
-        }
-        try:
-            res = requests.post(url, headers=headers, json=payload, timeout=30)
-            data = res.json()
-            if res.status_code == 200:
-                parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                reply_texts = [p.get("text", "") for p in parts if not p.get("thought", False)]
-                if not reply_texts:
-                    reply_texts = [p.get("text", "") for p in parts]
-                answer = "".join(reply_texts).strip()
-                if answer:
-                    return answer
-            else:
-                err_msg = data.get("error", {}).get("message", res.text)
-                last_error = f"{model_name} (HTTP {res.status_code}): {err_msg}"
-        except Exception as e:
-            last_error = f"{model_name}: {e}"
-
-    return f"❌ Lỗi từ Google AI: {last_error}"
+    return "⚠️ Máy chủ Google AI hiện đang quá tải trong chốc lát, bạn vui lòng gửi lại câu hỏi sau 10 giây nhé!"
 
 # Máy chủ web giữ kết nối 24/7 cho Render
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -157,7 +154,7 @@ def cmd_doc(message):
     else:
         safe_send_message(message.chat.id, "💡 Gõ `/doc <Tên_Tab>` để mở bài.")
 
-# 👉 TÍNH NĂNG MỚI: TÓM TẮT THẢO LUẬN NHÓM
+# Lệnh tóm tắt thảo luận nhóm
 @bot.message_handler(commands=['tomtat'])
 def cmd_tomtat(message):
     chat_id = message.chat.id
@@ -171,11 +168,11 @@ def cmd_tomtat(message):
     conversation_text = "\n".join(history)
     
     prompt = (
-        "Dưới đây là đoạn hội thoại gần đây trong một nhóm thảo luận Telegram:\n\n"
+        "Dưới đây là các tin nhắn gần nhất trong nhóm Telegram:\n\n"
         f"{conversation_text}\n\n"
-        "Hãy đóng vai trò một thư ký thông minh, tóm tắt lại nội dung trên bằng tiếng Việt:\n"
+        "Hãy đóng vai trò thư ký thông minh, tóm tắt lại bằng tiếng Việt:\n"
         "1. Các chủ đề/vấn đề chính đã trao đổi.\n"
-        "2. Các quyết định hoặc thống nhất quan trọng (nếu có).\n"
+        "2. Các quyết định/thống nhất quan trọng (nếu có).\n"
         "3. Các đầu việc cần làm (action items) kèm người phụ trách (nếu có nhắc đến).\n"
         "Yêu cầu: Ngắn gọn, súc tích, gạch đầu dòng rõ ràng."
     )
@@ -183,19 +180,18 @@ def cmd_tomtat(message):
     summary = ask_gemini(prompt)
     safe_send_message(chat_id, f"📝 *BẢN TÓM TẮT THẢO LUẬN NHÓM:*\n\n{summary}")
 
-# Xử lý tất cả tin nhắn trò chuyện (Nhóm & Chat riêng)
+# Xử lý tất cả tin nhắn
 @bot.message_handler(func=lambda msg: True)
 def handle_all_messages(message):
     chat_id = message.chat.id
     text = message.text.strip() if message.text else ""
     sender = message.from_user.first_name or "Thành viên"
 
-    # 1. TRONG NHÓM (group hoặc supergroup)
+    # Nếu ở trong nhóm
     if message.chat.type in ['group', 'supergroup']:
-        # Tự động ghi lại tin nhắn vào bộ nhớ tạm
         group_history[chat_id].append(f"{sender}: {text}")
 
-        # Chỉ trả lời khi có người Tag tên bot hoặc Reply vào tin nhắn của bot
+        # Chỉ trả lời khi được tag tên hoặc reply
         is_mentioned = BOT_USERNAME and f"@{BOT_USERNAME}" in text
         is_reply_to_bot = (
             message.reply_to_message and 
@@ -210,7 +206,7 @@ def handle_all_messages(message):
                 ai_reply = ask_gemini(clean_question)
                 safe_send_message(chat_id, ai_reply)
 
-    # 2. TRONG CHAT RIÊNG (1-1)
+    # Nếu ở trong chat riêng 1-1
     elif message.chat.type == 'private':
         bot.send_chat_action(chat_id, 'typing')
         ai_reply = ask_gemini(text)
@@ -227,16 +223,15 @@ def run_scheduler():
         time.sleep(30)
 
 if __name__ == "__main__":
-    print(f"✅ Bot Trợ lý 2 trong 1 (Hỗ trợ Tóm tắt nhóm) đang chạy...")
+    print(f"✅ Bot Trợ lý 2 trong 1 đang khởi động...")
     bot.remove_webhook()
 
-    # Lấy username của bot để nhận diện tag trong nhóm
     try:
         me = bot.get_me()
         BOT_USERNAME = me.username
         print(f"🤖 Bot Username: @{BOT_USERNAME}")
     except Exception as e:
-        print(f"Không lấy được bot username: {e}")
+        print(f"Lỗi khởi động: {e}")
 
     t_web = threading.Thread(target=run_dummy_server)
     t_web.daemon = True

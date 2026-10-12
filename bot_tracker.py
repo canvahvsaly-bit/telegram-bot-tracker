@@ -14,7 +14,6 @@ from collections import defaultdict, deque
 
 # ==================== CẤU HÌNH THÔNG TIN BẢO MẬT ====================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 MY_CHAT_ID = 5693795211
 SHEET_ID = "1IlNNxjZaqPzGObPXgkB6UQ7VAC9aBiDr5qDV_3yxksE"
@@ -25,24 +24,32 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 group_history = defaultdict(lambda: deque(maxlen=100))
 BOT_USERNAME = ""
 
-# ----------------- HÀM GỌI GEMINI AI -----------------
+# ----------------- HÀM GỌI GEMINI AI VỚI 4 API KEY LUÂN CHUYỂN -----------------
 def ask_gemini(prompt):
-    if not GEMINI_API_KEY:
-        return "❌ Lỗi: Chưa cấu hình GEMINI_API_KEY trên Render!"
-    
+    raw_keys = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEYS", "")
+    api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+
+    if not api_keys:
+        return "❌ Lỗi: Chưa cấu hình GEMINI_API_KEY trong Render Environment!"
+
     models = ["gemini-3.8-flash", "gemini-3.6-flash"]
-    for attempt in range(2):
+    error_logs = []
+
+    # Luân chuyển qua từng API Key (Tối đa 4 Project)
+    for key_index, current_key in enumerate(api_keys, 1):
         for model_name in models:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={current_key}"
             headers = {
                 "Content-Type": "application/json",
-                "x-goog-api-key": GEMINI_API_KEY
+                "x-goog-api-key": current_key
             }
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
             try:
-                res = requests.post(url, headers=headers, json=payload, timeout=40)
+                res = requests.post(url, headers=headers, json=payload, timeout=35)
+                data = res.json()
+                
+                # Gọi thành công 200
                 if res.status_code == 200:
-                    data = res.json()
                     parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
                     reply_texts = [p.get("text", "") for p in parts if not p.get("thought", False)]
                     if not reply_texts:
@@ -50,20 +57,24 @@ def ask_gemini(prompt):
                     answer = "".join(reply_texts).strip()
                     if answer:
                         return answer
-                elif res.status_code == 503:
-                    time.sleep(2)
-                    continue
-            except Exception:
-                continue
 
-    return "⚠️ Máy chủ Google AI đang bận trong chốc lát, vui lòng thử lại sau 10 giây!"
+                # Nếu bị nghẽn (503) hoặc hết hạn mức (429) -> thử key tiếp theo
+                err_msg = data.get("error", {}).get("message", res.text)
+                error_logs.append(f"Key #{key_index} ({model_name} - HTTP {res.status_code}): {err_msg}")
+                if res.status_code in [429, 503]:
+                    break  # Chuyển ngay sang API Key tiếp theo
 
-# ----------------- BỘ GIẢI MÃ TÀI LIỆU (EXCEL, PDF, WORD) -----------------
+            except Exception as e:
+                error_logs.append(f"Key #{key_index} ({model_name}): {e}")
+
+    return "⚠️ Toàn bộ 4 API Key đều đang bận, vui lòng thử lại sau vài giây!\nChi tiết: " + "; ".join(error_logs[-2:])
+
+# ----------------- BỘ GIẢI MÃ TÀI LIỆU (EXCEL, PDF, WORD, TXT) -----------------
 def extract_text_from_file(file_name, file_bytes):
     ext = os.path.splitext(file_name)[1].lower()
     text = ""
     try:
-        # 1. Đọc file Excel (.xlsx)
+        # 1. Excel (.xlsx)
         if ext == '.xlsx':
             import openpyxl
             wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
@@ -79,24 +90,24 @@ def extract_text_from_file(file_name, file_bytes):
                         break
             text = "\n".join(rows_text)
 
-        # 2. Đọc file PDF (.pdf)
+        # 2. PDF (.pdf)
         elif ext == '.pdf':
             import pypdf
             reader = pypdf.PdfReader(io.BytesIO(file_bytes))
             pages_text = []
-            for page in reader.pages[:20]: # Giới hạn 20 trang đầu
+            for page in reader.pages[:20]:
                 p_text = page.extract_text()
                 if p_text:
                     pages_text.append(p_text)
             text = "\n".join(pages_text)
 
-        # 3. Đọc file Word (.docx)
+        # 3. Word (.docx)
         elif ext == '.docx':
             import docx
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
 
-        # 4. File text hoặc CSV
+        # 4. Text hoặc CSV
         elif ext in ['.txt', '.csv']:
             text = file_bytes.decode('utf-8', errors='ignore')
 
@@ -107,7 +118,7 @@ def extract_text_from_file(file_name, file_bytes):
         return None, f"Lỗi đọc file: {e}"
 
     if not text.strip():
-        return None, "File không có nội dung chữ hoặc không thể trích xuất."
+        return None, "File không có nội dung chữ hoặc không trích xuất được."
 
     if len(text) > 15000:
         text = text[:15000] + "\n...(Đã cắt bớt vì tài liệu quá dài)..."
@@ -116,23 +127,18 @@ def extract_text_from_file(file_name, file_bytes):
 # ----------------- BỘ ĐỌC LINK (DOCS, SHEETS, BÁO CHÍ) -----------------
 def extract_text_from_url(url):
     try:
-        # Google Docs public
         if "docs.google.com/document/d/" in url:
             doc_id = url.split("/document/d/")[1].split("/")[0]
-            export_url = f"https://docs.google.com/document/d/{doc_id}/export?format=txt"
-            res = requests.get(export_url, timeout=15)
+            res = requests.get(f"https://docs.google.com/document/d/{doc_id}/export?format=txt", timeout=15)
             if res.status_code == 200:
                 return res.text[:15000]
 
-        # Google Sheets public
         elif "docs.google.com/spreadsheets/d/" in url:
             sheet_id = url.split("/spreadsheets/d/")[1].split("/")[0]
-            export_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv"
-            res = requests.get(export_url, timeout=15)
+            res = requests.get(f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv", timeout=15)
             if res.status_code == 200:
                 return res.text[:15000]
 
-        # Trang web / Bài báo thông thường
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=15)
         if res.status_code == 200:
@@ -147,7 +153,7 @@ def extract_text_from_url(url):
         print(f"Lỗi đọc link: {e}")
     return None
 
-# ----------------- XỬ LÝ GỬI TIN NHẮN AN TOÀN -----------------
+# ----------------- GỬI TIN NHẮN AN TOÀN -----------------
 def safe_send_message(chat_id, text, reply_markup=None):
     MAX_LENGTH = 3800
     if len(text) <= MAX_LENGTH:
@@ -164,12 +170,12 @@ def safe_send_message(chat_id, text, reply_markup=None):
             except Exception:
                 bot.send_message(chat_id, part, reply_markup=markup)
 
-# Máy chủ web Render
+# Máy chủ web giữ kết nối cho Render
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot 2-in-1 is running 24/7!")
+        self.wfile.write(b"Bot 2-in-1 is running 24/7 with 4 API Keys!")
 
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
@@ -256,14 +262,13 @@ def cmd_tomtat(message):
     summary = ask_gemini(prompt)
     safe_send_message(chat_id, f"📝 *BẢN TÓM TẮT THẢO LUẬN NHÓM:*\n\n{summary}")
 
-# 👉 TÍNH NĂNG MỚI: XỬ LÝ FILE ĐÍNH KÈM (EXCEL, PDF, WORD)
+# XỬ LÝ FILE ĐÍNH KÈM (.xlsx, .pdf, .docx, .txt)
 @bot.message_handler(content_types=['document'])
 def handle_document_upload(message):
     chat_id = message.chat.id
     file_name = message.document.file_name
     caption = message.caption or ""
 
-    # Trong nhóm: chỉ xử lý nếu có tag bot hoặc trong chat riêng
     is_in_group = message.chat.type in ['group', 'supergroup']
     is_mentioned = BOT_USERNAME and f"@{BOT_USERNAME}" in caption
 
@@ -299,7 +304,7 @@ def handle_document_upload(message):
     except Exception as e:
         safe_send_message(chat_id, f"❌ Có lỗi khi đọc tài liệu: {e}")
 
-# XỬ LÝ TIN NHẮN CHỮ & LINK CHIA SẺ
+# XỬ LÝ TIN NHẮN CHỮ & LINK
 @bot.message_handler(func=lambda msg: True)
 def handle_all_messages(message):
     chat_id = message.chat.id
@@ -316,14 +321,13 @@ def handle_all_messages(message):
         )
         if not (is_mentioned or is_reply_to_bot):
             return
-
         clean_question = text.replace(f"@{BOT_USERNAME}", "").strip() if BOT_USERNAME else text
     else:
         clean_question = text
 
     bot.send_chat_action(chat_id, 'typing')
 
-    # 👉 Nhận diện nếu người dùng gửi Link (Google Docs, Sheets, Web)
+    # Nhận diện nếu gửi Link
     urls = re.findall(r'(https?://[^\s]+)', clean_question)
     if urls:
         target_url = urls[0]
@@ -339,7 +343,7 @@ def handle_all_messages(message):
             safe_send_message(chat_id, ai_reply)
             return
 
-    # Nếu là câu hỏi chữ thông thường
+    # Câu hỏi chữ thông thường
     ai_reply = ask_gemini(clean_question)
     safe_send_message(chat_id, ai_reply)
 
@@ -354,7 +358,7 @@ def run_scheduler():
         time.sleep(30)
 
 if __name__ == "__main__":
-    print(f"✅ Bot Trợ lý Đa năng (Hỗ trợ Đọc File & Link) đang chạy...")
+    print(f"✅ Bot Trợ lý 2 trong 1 (Hệ thống 4 API Key Luân Chuyển) đang chạy...")
     bot.remove_webhook()
     try:
         me = bot.get_me()

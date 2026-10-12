@@ -9,6 +9,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import schedule
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from collections import defaultdict, deque
 
 # ==================== CẤU HÌNH THÔNG TIN ====================
 TELEGRAM_TOKEN = "8998865332:AAGAKEQ94VibKBMeYFZOyjieX7k8m6E8m0k"
@@ -22,14 +23,17 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-# Hàm gọi Gemini AI trực tiếp qua REST API (Chuẩn thế hệ Gemini 3.8 mới nhất)
+# Bộ nhớ tạm: Lưu tối đa 100 tin nhắn gần nhất cho mỗi nhóm
+group_history = defaultdict(lambda: deque(maxlen=100))
+BOT_USERNAME = ""
+
+# Hàm gọi Gemini AI trực tiếp qua REST API (Gemini 3.8 Flash)
 def ask_gemini(prompt):
     if not GEMINI_API_KEY:
         return "❌ Lỗi: Chưa nhận được GEMINI_API_KEY từ Render Environment!"
     
-    # Chỉ dùng các model thế hệ 3.x đang hoạt động (ĐÃ XÓA BỎ 2.5)
     models = ["gemini-3.8-flash", "gemini-3.6-flash"]
-    error_details = []
+    last_error = ""
 
     for model_name in models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
@@ -49,7 +53,6 @@ def ask_gemini(prompt):
             data = res.json()
             if res.status_code == 200:
                 parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                # Trích xuất văn bản trả lời thực tế (bỏ qua thinking block ngầm của 3.8)
                 reply_texts = [p.get("text", "") for p in parts if not p.get("thought", False)]
                 if not reply_texts:
                     reply_texts = [p.get("text", "") for p in parts]
@@ -58,11 +61,12 @@ def ask_gemini(prompt):
                     return answer
             else:
                 err_msg = data.get("error", {}).get("message", res.text)
-                error_details.append(f"{model_name} (HTTP {res.status_code}): {err_msg}")
+                last_error = f"{model_name} (HTTP {res.status_code}): {err_msg}"
         except Exception as e:
-            error_details.append(f"{model_name}: {e}")
+            last_error = f"{model_name}: {e}"
 
-    return "❌ Lỗi từ Google AI:\n" + "\n".join(error_details)
+    return f"❌ Lỗi từ Google AI: {last_error}"
+
 # Máy chủ web giữ kết nối 24/7 cho Render
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -153,12 +157,64 @@ def cmd_doc(message):
     else:
         safe_send_message(message.chat.id, "💡 Gõ `/doc <Tên_Tab>` để mở bài.")
 
-# 👉 CHAT TRỰC TIẾP VỚI GEMINI AI
+# 👉 TÍNH NĂNG MỚI: TÓM TẮT THẢO LUẬN NHÓM
+@bot.message_handler(commands=['tomtat'])
+def cmd_tomtat(message):
+    chat_id = message.chat.id
+    history = group_history.get(chat_id)
+    
+    if not history or len(history) < 2:
+        safe_send_message(chat_id, "⚠️ Nhóm chưa có đủ tin nhắn trao đổi để tóm tắt (cần ít nhất 2 tin nhắn trở lên).")
+        return
+
+    bot.send_chat_action(chat_id, 'typing')
+    conversation_text = "\n".join(history)
+    
+    prompt = (
+        "Dưới đây là đoạn hội thoại gần đây trong một nhóm thảo luận Telegram:\n\n"
+        f"{conversation_text}\n\n"
+        "Hãy đóng vai trò một thư ký thông minh, tóm tắt lại nội dung trên bằng tiếng Việt:\n"
+        "1. Các chủ đề/vấn đề chính đã trao đổi.\n"
+        "2. Các quyết định hoặc thống nhất quan trọng (nếu có).\n"
+        "3. Các đầu việc cần làm (action items) kèm người phụ trách (nếu có nhắc đến).\n"
+        "Yêu cầu: Ngắn gọn, súc tích, gạch đầu dòng rõ ràng."
+    )
+    
+    summary = ask_gemini(prompt)
+    safe_send_message(chat_id, f"📝 *BẢN TÓM TẮT THẢO LUẬN NHÓM:*\n\n{summary}")
+
+# Xử lý tất cả tin nhắn trò chuyện (Nhóm & Chat riêng)
 @bot.message_handler(func=lambda msg: True)
-def chat_with_gemini(message):
-    bot.send_chat_action(message.chat.id, 'typing')
-    ai_reply = ask_gemini(message.text.strip())
-    safe_send_message(message.chat.id, ai_reply)
+def handle_all_messages(message):
+    chat_id = message.chat.id
+    text = message.text.strip() if message.text else ""
+    sender = message.from_user.first_name or "Thành viên"
+
+    # 1. TRONG NHÓM (group hoặc supergroup)
+    if message.chat.type in ['group', 'supergroup']:
+        # Tự động ghi lại tin nhắn vào bộ nhớ tạm
+        group_history[chat_id].append(f"{sender}: {text}")
+
+        # Chỉ trả lời khi có người Tag tên bot hoặc Reply vào tin nhắn của bot
+        is_mentioned = BOT_USERNAME and f"@{BOT_USERNAME}" in text
+        is_reply_to_bot = (
+            message.reply_to_message and 
+            message.reply_to_message.from_user and
+            message.reply_to_message.from_user.username == BOT_USERNAME
+        )
+
+        if is_mentioned or is_reply_to_bot:
+            bot.send_chat_action(chat_id, 'typing')
+            clean_question = text.replace(f"@{BOT_USERNAME}", "").strip() if BOT_USERNAME else text
+            if clean_question:
+                ai_reply = ask_gemini(clean_question)
+                safe_send_message(chat_id, ai_reply)
+
+    # 2. TRONG CHAT RIÊNG (1-1)
+    elif message.chat.type == 'private':
+        bot.send_chat_action(chat_id, 'typing')
+        ai_reply = ask_gemini(text)
+        safe_send_message(chat_id, ai_reply)
 
 def daily_job():
     safe_send_message(MY_CHAT_ID, f"⏰ *21h00 rồi! Dành 3 phút nạp bài học tối nay nhé:*")
@@ -171,9 +227,17 @@ def run_scheduler():
         time.sleep(30)
 
 if __name__ == "__main__":
-    print(f"✅ Bot Trợ lý 2 trong 1 đang chạy...")
+    print(f"✅ Bot Trợ lý 2 trong 1 (Hỗ trợ Tóm tắt nhóm) đang chạy...")
     bot.remove_webhook()
-    
+
+    # Lấy username của bot để nhận diện tag trong nhóm
+    try:
+        me = bot.get_me()
+        BOT_USERNAME = me.username
+        print(f"🤖 Bot Username: @{BOT_USERNAME}")
+    except Exception as e:
+        print(f"Không lấy được bot username: {e}")
+
     t_web = threading.Thread(target=run_dummy_server)
     t_web.daemon = True
     t_web.start()
@@ -181,5 +245,5 @@ if __name__ == "__main__":
     t_sched = threading.Thread(target=run_scheduler)
     t_sched.daemon = True
     t_sched.start()
-    
+
     bot.infinity_polling()

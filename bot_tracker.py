@@ -279,11 +279,6 @@ def handle_next_step(call):
     send_sheet_step(call.message.chat.id, tab_name, int(next_step))
     bot.answer_callback_query(call.id)
 
-@bot.message_handler(commands=['start'])
-def cmd_start(message):
-    safe_send_message(message.chat.id, f"📖 *BẮT ĐẦU BÀI ĐỌC: {DEFAULT_TAB}*")
-    send_sheet_step(message.chat.id, DEFAULT_TAB, 0)
-
 # LỆNH TÓM TẮT THẢO LUẬN NHÓM
 @bot.message_handler(commands=['tomtat'])
 def cmd_tomtat(message):

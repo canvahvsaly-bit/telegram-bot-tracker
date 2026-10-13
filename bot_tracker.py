@@ -284,16 +284,7 @@ def cmd_start(message):
     safe_send_message(message.chat.id, f"📖 *BẮT ĐẦU BÀI ĐỌC: {DEFAULT_TAB}*")
     send_sheet_step(message.chat.id, DEFAULT_TAB, 0)
 
-@bot.message_handler(commands=['doc'])
-def cmd_doc(message):
-    args = message.text.split(maxsplit=1)
-    if len(args) > 1:
-        tab_name = args[1].strip()
-        safe_send_message(message.chat.id, f"📖 *BẮT ĐẦU BÀI ĐỌC: {tab_name}*")
-        send_sheet_step(message.chat.id, tab_name, 0)
-    else:
-        safe_send_message(message.chat.id, "💡 Gõ `/doc <Tên_Tab>` để mở bài.")
-
+# LỆNH TÓM TẮT THẢO LUẬN NHÓM
 @bot.message_handler(commands=['tomtat'])
 def cmd_tomtat(message):
     chat_id = message.chat.id
@@ -314,3 +305,7 @@ def cmd_tomtat(message):
     )
     summary = ask_ai(prompt)
     safe_send_message(chat_id, f"📝 *BẢN TÓM TẮT THẢO LUẬN NHÓM:*\n\n{summary}")
+
+# XỬ LÝ FILE ĐÍNH KÈM
+@bot.message_handler(content_types=['document'])
+def handle_document_upload(message):

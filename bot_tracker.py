@@ -13,8 +13,9 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from collections import defaultdict, deque
 
 # ==================== CẤU HÌNH THÔNG TIN BẢO MẬT ====================
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
-LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID", "").strip()
+# Có sẵn cơ chế tự bảo vệ: Lấy từ Render trước, nếu chưa có thì dùng mã mặc định
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8998865332:AAGAKEQ94VibKBMeYFZOyjieX7k8m6E8m0k").strip()
+LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID", "-1004381678817").strip()
 
 # Các khóa AI (Lấy an toàn từ Render Environment)
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
@@ -86,7 +87,7 @@ def ask_gemini_backup(prompt):
     raw_keys = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEYS", "")
     api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
     if not api_keys:
-        return "❌ Tất cả các AI đều không khả dụng!"
+        return "❌ Tất cả các dịch vụ AI đều đang bận, vui lòng thử lại sau chốc lát!"
 
     models = ["gemini-3.6-flash", "gemini-3.8-flash"]
     for current_key in api_keys:
@@ -105,25 +106,23 @@ def ask_gemini_backup(prompt):
                         return ans
             except Exception:
                 continue
-    return "⚠️ Cả Claude, ChatGPT và Gemini đều đang bận, bạn thử lại sau vài giây nhé!"
+    return "⚠️ Cả Claude, ChatGPT và Gemini đều đang bận, bạn vui lòng gửi lại sau 10 giây nhé!"
 
-# ----------------- HÀM TỔNG HỢP GỌI AI -----------------
-def ask_gemini(prompt):
-    # 1. Thử gọi Claude trước (Văn phong hay nhất)
+# ----------------- HÀM TỔNG HỢP GỌI AI ĐA NĂNG -----------------
+def ask_ai(prompt):
+    # 1. Ưu tiên Claude
     if ANTHROPIC_API_KEY:
         ans, err = ask_claude(prompt)
         if ans:
             return ans
-        print(f"Claude lỗi: {err} -> Chuyển sang ChatGPT...")
 
-    # 2. Thử gọi ChatGPT (gpt-4o-mini)
+    # 2. Dự phòng bằng ChatGPT (gpt-4o-mini)
     if OPENAI_API_KEY:
         ans, err = ask_chatgpt(prompt)
         if ans:
             return ans
-        print(f"ChatGPT lỗi: {err} -> Chuyển sang Gemini...")
 
-    # 3. Chuyển sang Gemini nếu cả 2 bên trên lỗi/hết credit
+    # 3. Chuyển sang Gemini nếu 2 bên trên lỗi/hết credit
     return ask_gemini_backup(prompt)
 
 # ----------------- BỘ GIẢI MÃ TÀI LIỆU (EXCEL, PDF, WORD, TXT) -----------------
@@ -228,7 +227,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot 3-in-1 (Claude + ChatGPT + Gemini) is running 24/7!")
+        self.wfile.write(b"Bot 3-in-1 is running 24/7!")
 
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
@@ -304,68 +303,8 @@ def cmd_tomtat(message):
         return
 
     bot.send_chat_action(chat_id, 'typing')
+    conversation_text = "\n".join(history)
     prompt = (
         "Dưới đây là các tin nhắn gần nhất trong nhóm Telegram:\n\n"
-        f"{chr(10).join(history)}\n\n"
-        "Hãy đóng vai trò thư ký thông minh, tóm tắt lại bằng tiếng Việt:\n"
-        "1. Các chủ đề/vấn đề chính đã trao đổi.\n"
-        "2. Các quyết định/thống nhất quan trọng (nếu có).\n"
-        "3. Các đầu việc cần làm (action items) kèm người phụ trách (nếu có nhắc đến)."
-    )
-    summary = ask_gemini(prompt)
-    safe_send_message(chat_id, f"📝 *BẢN TÓM TẮT THẢO LUẬN NHÓM:*\n\n{summary}")
-
-# XỬ LÝ FILE ĐÍNH KÈM
-@bot.message_handler(content_types=['document'])
-def handle_document_upload(message):
-    chat_id = message.chat.id
-    file_name = message.document.file_name
-    caption = message.caption or ""
-
-    is_in_group = message.chat.type in ['group', 'supergroup']
-    is_mentioned = BOT_USERNAME and f"@{BOT_USERNAME}" in caption
-
-    if is_in_group and not is_mentioned:
-        return
-
-    if message.document.file_size > 20 * 1024 * 1024:
-        safe_send_message(chat_id, "⚠️ File quá lớn (giới hạn tối đa 20MB).")
-        return
-
-    bot.send_chat_action(chat_id, 'typing')
-    safe_send_message(chat_id, f"📥 Đang tải và phân tích tài liệu *{file_name}*...")
-
-    try:
-        file_info = bot.get_file(message.document.file_id)
-        downloaded = bot.download_file(file_info.file_path)
-        content_text, err = extract_text_from_file(file_name, downloaded)
-
-        if err:
-            safe_send_message(chat_id, f"❌ {err}")
-            return
-
-        user_req = caption.replace(f"@{BOT_USERNAME}", "").strip() if caption else "Hãy tóm tắt và phân tích các ý chính quan trọng nhất trong tài liệu này."
-        prompt = (
-            f"Dưới đây là nội dung trích xuất từ tài liệu '{file_name}':\n\n"
-            f"{content_text}\n\n"
-            f"Yêu cầu của người dùng: {user_req}\n"
-            "Hãy trả lời bằng tiếng Việt, rõ ràng, định dạng đẹp mắt."
-        )
-        ai_reply = ask_gemini(prompt)
-        safe_send_message(chat_id, ai_reply)
-
-    except Exception as e:
-        safe_send_message(chat_id, f"❌ Có lỗi khi đọc tài liệu: {e}")
-
-# XỬ LÝ TIN NHẮN CHỮ & LINK
-@bot.message_handler(func=lambda msg: True)
-def handle_all_messages(message):
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-    text = message.text.strip() if message.text else ""
-    sender = message.from_user.first_name or "Thành viên"
-    username = f"@{message.from_user.username}" if message.from_user.username else "Không có"
-
-    # Ghi nhật ký vào nhóm riêng
-    if user_id != MY_CHAT_ID and text and LOG_CHANNEL_ID:
-        if str(chat_id)
+        f"{conversation_text}\n\n"
+        "Hãy đóng vai trò thư ký thông minh, tó

@@ -14,6 +14,7 @@ from collections import defaultdict, deque
 
 # ==================== CẤU HÌNH THÔNG TIN BẢO MẬT ====================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
+LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID", "").strip()
 
 MY_CHAT_ID = 5693795211
 SHEET_ID = "1IlNNxjZaqPzGObPXgkB6UQ7VAC9aBiDr5qDV_3yxksE"
@@ -24,7 +25,7 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 group_history = defaultdict(lambda: deque(maxlen=100))
 BOT_USERNAME = ""
 
-# ----------------- HÀM GỌI GEMINI AI TỐI ƯU KHÔNG BỊ NGHẼN -----------------
+# ----------------- HÀM GỌI GEMINI AI LUÂN CHUYỂN 4 KEY -----------------
 def ask_gemini(prompt):
     raw_keys = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEYS", "")
     api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
@@ -32,11 +33,9 @@ def ask_gemini(prompt):
     if not api_keys:
         return "❌ Lỗi: Chưa cấu hình GEMINI_API_KEY trong Render Environment!"
 
-    # Đưa 3.6-flash lên đầu để tránh nghẽn, dự phòng thêm 3.8-flash
     models = ["gemini-3.6-flash", "gemini-3.8-flash"]
     error_logs = []
 
-    # Thử lần lượt từng Key và từng Model
     for key_index, current_key in enumerate(api_keys, 1):
         for model_name in models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={current_key}"
@@ -49,7 +48,6 @@ def ask_gemini(prompt):
                 res = requests.post(url, headers=headers, json=payload, timeout=35)
                 data = res.json()
                 
-                # Trả lời thành công
                 if res.status_code == 200:
                     parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
                     reply_texts = [p.get("text", "") for p in parts if not p.get("thought", False)]
@@ -59,21 +57,19 @@ def ask_gemini(prompt):
                     if answer:
                         return answer
 
-                # Nếu bị lỗi (503 nghẽn hoặc 429 quá tải), ghi nhận lỗi và tiếp tục thử model khác
                 err_msg = data.get("error", {}).get("message", res.text)
                 error_logs.append(f"Key #{key_index} ({model_name} - HTTP {res.status_code}): {err_msg}")
 
             except Exception as e:
                 error_logs.append(f"Key #{key_index} ({model_name}): {e}")
 
-    return "⚠️ Tất cả các mô hình và Key đều đang bận, vui lòng thử lại sau chốc lát!"
+    return "⚠️ Máy chủ Google AI đang bận trong chốc lát, vui lòng thử lại sau vài giây!"
 
 # ----------------- BỘ GIẢI MÃ TÀI LIỆU (EXCEL, PDF, WORD, TXT) -----------------
 def extract_text_from_file(file_name, file_bytes):
     ext = os.path.splitext(file_name)[1].lower()
     text = ""
     try:
-        # 1. Excel (.xlsx)
         if ext == '.xlsx':
             import openpyxl
             wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
@@ -89,7 +85,6 @@ def extract_text_from_file(file_name, file_bytes):
                         break
             text = "\n".join(rows_text)
 
-        # 2. PDF (.pdf)
         elif ext == '.pdf':
             import pypdf
             reader = pypdf.PdfReader(io.BytesIO(file_bytes))
@@ -100,18 +95,16 @@ def extract_text_from_file(file_name, file_bytes):
                     pages_text.append(p_text)
             text = "\n".join(pages_text)
 
-        # 3. Word (.docx)
         elif ext == '.docx':
             import docx
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
 
-        # 4. Text hoặc CSV
         elif ext in ['.txt', '.csv']:
             text = file_bytes.decode('utf-8', errors='ignore')
 
         else:
-            return None, f"Định dạng {ext} chưa được hỗ trợ (chỉ nhận: .xlsx, .pdf, .docx, .txt, .csv)."
+            return None, f"Định dạng {ext} chưa được hỗ trợ."
 
     except Exception as e:
         return None, f"Lỗi đọc file: {e}"
@@ -169,12 +162,12 @@ def safe_send_message(chat_id, text, reply_markup=None):
             except Exception:
                 bot.send_message(chat_id, part, reply_markup=markup)
 
-# Máy chủ web giữ kết nối cho Render
+# Máy chủ web Render
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot 2-in-1 is running 24/7 with 4 API Keys!")
+        self.wfile.write(b"Bot 2-in-1 is running 24/7!")
 
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
@@ -261,7 +254,7 @@ def cmd_tomtat(message):
     summary = ask_gemini(prompt)
     safe_send_message(chat_id, f"📝 *BẢN TÓM TẮT THẢO LUẬN NHÓM:*\n\n{summary}")
 
-# XỬ LÝ FILE ĐÍNH KÈM (.xlsx, .pdf, .docx, .txt)
+# XỬ LÝ FILE ĐÍNH KÈM
 @bot.message_handler(content_types=['document'])
 def handle_document_upload(message):
     chat_id = message.chat.id
@@ -303,13 +296,33 @@ def handle_document_upload(message):
     except Exception as e:
         safe_send_message(chat_id, f"❌ Có lỗi khi đọc tài liệu: {e}")
 
-# XỬ LÝ TIN NHẮN CHỮ & LINK
+# XỬ LÝ TIN NHẮN CHỮ & LINK (TỰ ĐỘNG BẮN NHẬT KÝ VÀO NHÓM LOG)
 @bot.message_handler(func=lambda msg: True)
 def handle_all_messages(message):
     chat_id = message.chat.id
+    user_id = message.from_user.id
     text = message.text.strip() if message.text else ""
     sender = message.from_user.first_name or "Thành viên"
+    username = f"@{message.from_user.username}" if message.from_user.username else "Không có"
 
+    # 👉 TỰ ĐỘNG BÁO CÁO VỀ NHÓM "Nhật Ký Bot Tracker" KHI CÓ NGƯỜI NHẮN TIN
+    if user_id != MY_CHAT_ID and text and LOG_CHANNEL_ID:
+        # Bỏ qua không báo cáo các tin nhắn bên trong chính nhóm Nhật Ký
+        if str(chat_id) != str(LOG_CHANNEL_ID):
+            chat_type = "Nhóm" if message.chat.type in ['group', 'supergroup'] else "Chat riêng"
+            admin_alert = (
+                f"🔔 *NGƯỜI DÙNG TƯƠNG TÁC:*\n\n"
+                f"• *Người gửi:* {sender} ({username})\n"
+                f"• *User ID:* `{user_id}`\n"
+                f"• *Nơi gửi:* {chat_type}\n"
+                f"• *Nội dung:* \"_{text}_\""
+            )
+            try:
+                bot.send_message(LOG_CHANNEL_ID, admin_alert, parse_mode="Markdown")
+            except Exception as e:
+                print(f"Lỗi gửi log nhóm: {e}")
+
+    # Xử lý trong nhóm
     if message.chat.type in ['group', 'supergroup']:
         group_history[chat_id].append(f"{sender}: {text}")
         is_mentioned = BOT_USERNAME and f"@{BOT_USERNAME}" in text
@@ -342,7 +355,7 @@ def handle_all_messages(message):
             safe_send_message(chat_id, ai_reply)
             return
 
-    # Câu hỏi chữ thông thường
+    # Câu hỏi thông thường
     ai_reply = ask_gemini(clean_question)
     safe_send_message(chat_id, ai_reply)
 
@@ -357,7 +370,7 @@ def run_scheduler():
         time.sleep(30)
 
 if __name__ == "__main__":
-    print(f"✅ Bot Trợ lý 2 trong 1 (Hệ thống 4 API Key Luân Chuyển) đang chạy...")
+    print(f"✅ Bot Trợ lý 2 trong 1 đang chạy hoàn hảo...")
     bot.remove_webhook()
     try:
         me = bot.get_me()

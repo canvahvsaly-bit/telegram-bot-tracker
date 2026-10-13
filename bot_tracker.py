@@ -63,7 +63,9 @@ def ask_gemini(prompt):
             except Exception as e:
                 error_logs.append(f"Key #{key_index} ({model_name}): {e}")
 
-    return "⚠️ Máy chủ Google AI đang bận trong chốc lát, vui lòng thử lại sau vài giây!"
+    return "⚠️ Không thể kết nối Google AI:
+" + "
+".join(error_logs[-2:])
 
 # ----------------- BỘ GIẢI MÃ TÀI LIỆU (EXCEL, PDF, WORD, TXT) -----------------
 def extract_text_from_file(file_name, file_bytes):

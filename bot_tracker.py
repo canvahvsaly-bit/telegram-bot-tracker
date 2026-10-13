@@ -307,4 +307,10 @@ def cmd_tomtat(message):
     prompt = (
         "Dưới đây là các tin nhắn gần nhất trong nhóm Telegram:\n\n"
         f"{conversation_text}\n\n"
-        "Hãy đóng vai trò thư ký thông minh, tó
+        "Hãy đóng vai trò thư ký thông minh, tóm tắt lại bằng tiếng Việt:\n"
+        "1. Các chủ đề/vấn đề chính đã trao đổi.\n"
+        "2. Các quyết định/thống nhất quan trọng (nếu có).\n"
+        "3. Các đầu việc cần làm (action items) kèm người phụ trách (nếu có nhắc đến)."
+    )
+    summary = ask_ai(prompt)
+    safe_send_message(chat_id, f"📝 *BẢN TÓM TẮT THẢO LUẬN NHÓM:*\n\n{summary}")

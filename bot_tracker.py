@@ -34,7 +34,7 @@ def ask_gemini(prompt):
         return "❌ Lỗi: Chưa cấu hình GEMINI_API_KEY trong Render Environment!"
 
     # Đưa 3.6-flash lên đầu để tránh nghẽn, dự phòng thêm 3.8-flash
-    models = ["gemini-3.6-flash", "gemini-3.8-flash"]
+    models = ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-1.5-pro", "gemini-2.5-pro"]
     error_logs = []
 
     for key_index, current_key in enumerate(api_keys, 1):

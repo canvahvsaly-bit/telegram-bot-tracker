@@ -16,6 +16,10 @@ from collections import defaultdict, deque
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID", "").strip()
 
+# Các khóa AI (Lấy an toàn từ Render Environment)
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+
 MY_CHAT_ID = 5693795211
 SHEET_ID = "1IlNNxjZaqPzGObPXgkB6UQ7VAC9aBiDr5qDV_3yxksE"
 DEFAULT_TAB = "Tracker 2"
@@ -25,47 +29,102 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 group_history = defaultdict(lambda: deque(maxlen=100))
 BOT_USERNAME = ""
 
-# ----------------- HÀM GỌI GEMINI AI TỐI ƯU KHÔNG BỊ NGHẼN -----------------
-def ask_gemini(prompt):
+# ----------------- 1. BỘ NÃO CLAUDE (ƯU TIÊN SỐ 1) -----------------
+def ask_claude(prompt):
+    if not ANTHROPIC_API_KEY:
+        return None, "Chưa có ANTHROPIC_API_KEY"
+    url = "https://api.anthropic.com/v1/messages"
+    headers = {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json"
+    }
+    payload = {
+        "model": "claude-3-5-haiku-20241022",
+        "max_tokens": 1500,
+        "messages": [{"role": "user", "content": prompt}]
+    }
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=35)
+        if res.status_code == 200:
+            return res.json()["content"][0]["text"].strip(), None
+        else:
+            err = res.json().get("error", {}).get("message", res.text)
+            return None, f"Claude HTTP {res.status_code}: {err}"
+    except Exception as e:
+        return None, f"Claude lỗi: {e}"
+
+# ----------------- 2. BỘ NÃO CHATGPT (DỰ PHÒNG SỐ 2) -----------------
+def ask_chatgpt(prompt):
+    if not OPENAI_API_KEY:
+        return None, "Chưa có OPENAI_API_KEY"
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": [
+            {"role": "system", "content": "Bạn là trợ lý thông minh, hỗ trợ nhiệt tình bằng tiếng Việt súc tích, thực tế, định dạng đẹp."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.7
+    }
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=30)
+        if res.status_code == 200:
+            return res.json()["choices"][0]["message"]["content"].strip(), None
+        else:
+            err = res.json().get("error", {}).get("message", res.text)
+            return None, f"ChatGPT HTTP {res.status_code}: {err}"
+    except Exception as e:
+        return None, f"ChatGPT lỗi: {e}"
+
+# ----------------- 3. BỘ NÃO GEMINI 4 KEY (CỨU CÁNH CUỐI CÙNG) -----------------
+def ask_gemini_backup(prompt):
     raw_keys = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEYS", "")
     api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
-
     if not api_keys:
-        return "❌ Lỗi: Chưa cấu hình GEMINI_API_KEY trong Render Environment!"
+        return "❌ Tất cả các AI đều không khả dụng!"
 
-    # Đưa 3.6-flash lên đầu để tránh nghẽn, dự phòng thêm 3.8-flash
-    models = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-pro-preview"]
-    error_logs = []
-
-    for key_index, current_key in enumerate(api_keys, 1):
+    models = ["gemini-3.6-flash", "gemini-3.8-flash"]
+    for current_key in api_keys:
         for model_name in models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={current_key}"
-            headers = {
-                "Content-Type": "application/json",
-                "x-goog-api-key": current_key
-            }
+            headers = {"Content-Type": "application/json", "x-goog-api-key": current_key}
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
             try:
-                res = requests.post(url, headers=headers, json=payload, timeout=35)
-                data = res.json()
-                
-                # Trả lời thành công
+                res = requests.post(url, headers=headers, json=payload, timeout=30)
                 if res.status_code == 200:
+                    data = res.json()
                     parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                    reply_texts = [p.get("text", "") for p in parts if not p.get("thought", False)]
-                    if not reply_texts:
-                        reply_texts = [p.get("text", "") for p in parts]
-                    answer = "".join(reply_texts).strip()
-                    if answer:
-                        return answer
+                    texts = [p.get("text", "") for p in parts if not p.get("thought", False)]
+                    ans = "".join(texts).strip()
+                    if ans:
+                        return ans
+            except Exception:
+                continue
+    return "⚠️ Cả Claude, ChatGPT và Gemini đều đang bận, bạn thử lại sau vài giây nhé!"
 
-                err_msg = data.get("error", {}).get("message", res.text)
-                error_logs.append(f"Key #{key_index} ({model_name} - HTTP {res.status_code}): {err_msg}")
+# ----------------- HÀM TỔNG HỢP GỌI AI -----------------
+def ask_gemini(prompt):
+    # 1. Thử gọi Claude trước (Văn phong hay nhất)
+    if ANTHROPIC_API_KEY:
+        ans, err = ask_claude(prompt)
+        if ans:
+            return ans
+        print(f"Claude lỗi: {err} -> Chuyển sang ChatGPT...")
 
-            except Exception as e:
-                error_logs.append(f"Key #{key_index} ({model_name}): {e}")
+    # 2. Thử gọi ChatGPT (gpt-4o-mini)
+    if OPENAI_API_KEY:
+        ans, err = ask_chatgpt(prompt)
+        if ans:
+            return ans
+        print(f"ChatGPT lỗi: {err} -> Chuyển sang Gemini...")
 
-    return "❌ Lỗi phản hồi từ Google:\n" + "\n".join(error_logs[-2:])
+    # 3. Chuyển sang Gemini nếu cả 2 bên trên lỗi/hết credit
+    return ask_gemini_backup(prompt)
 
 # ----------------- BỘ GIẢI MÃ TÀI LIỆU (EXCEL, PDF, WORD, TXT) -----------------
 def extract_text_from_file(file_name, file_bytes):
@@ -169,7 +228,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot 2-in-1 is running 24/7!")
+        self.wfile.write(b"Bot 3-in-1 (Claude + ChatGPT + Gemini) is running 24/7!")
 
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
@@ -274,7 +333,7 @@ def handle_document_upload(message):
         return
 
     bot.send_chat_action(chat_id, 'typing')
-    safe_send_message(chat_id, f"📥 Đang tải và đọc file *{file_name}*...")
+    safe_send_message(chat_id, f"📥 Đang tải và phân tích tài liệu *{file_name}*...")
 
     try:
         file_info = bot.get_file(message.document.file_id)
@@ -309,83 +368,4 @@ def handle_all_messages(message):
 
     # Ghi nhật ký vào nhóm riêng
     if user_id != MY_CHAT_ID and text and LOG_CHANNEL_ID:
-        if str(chat_id) != str(LOG_CHANNEL_ID):
-            chat_type = "Nhóm" if message.chat.type in ['group', 'supergroup'] else "Chat riêng"
-            admin_alert = (
-                f"🔔 *NGƯỜI DÙNG TƯƠNG TÁC:*\n\n"
-                f"• *Người gửi:* {sender} ({username})\n"
-                f"• *User ID:* `{user_id}`\n"
-                f"• *Nơi gửi:* {chat_type}\n"
-                f"• *Nội dung:* \"_{text}_\""
-            )
-            try:
-                bot.send_message(LOG_CHANNEL_ID, admin_alert, parse_mode="Markdown")
-            except Exception as e:
-                print(f"Lỗi gửi log: {e}")
-
-    # Xử lý trong nhóm
-    if message.chat.type in ['group', 'supergroup']:
-        group_history[chat_id].append(f"{sender}: {text}")
-        is_mentioned = BOT_USERNAME and f"@{BOT_USERNAME}" in text
-        is_reply_to_bot = (
-            message.reply_to_message and 
-            message.reply_to_message.from_user and
-            message.reply_to_message.from_user.username == BOT_USERNAME
-        )
-        if not (is_mentioned or is_reply_to_bot):
-            return
-        clean_question = text.replace(f"@{BOT_USERNAME}", "").strip() if BOT_USERNAME else text
-    else:
-        clean_question = text
-
-    bot.send_chat_action(chat_id, 'typing')
-
-    # Nhận diện Link
-    urls = re.findall(r'(https?://[^\s]+)', clean_question)
-    if urls:
-        target_url = urls[0]
-        url_content = extract_text_from_url(target_url)
-        if url_content:
-            prompt = (
-                f"Người dùng gửi liên kết: {target_url}\n"
-                f"Nội dung thu thập được từ liên kết này:\n\n{url_content}\n\n"
-                f"Yêu cầu của người dùng: {clean_question}\n"
-                "Hãy phân tích và trả lời theo yêu cầu bằng tiếng Việt."
-            )
-            ai_reply = ask_gemini(prompt)
-            safe_send_message(chat_id, ai_reply)
-            return
-
-    # Câu hỏi thông thường
-    ai_reply = ask_gemini(clean_question)
-    safe_send_message(chat_id, ai_reply)
-
-def daily_job():
-    safe_send_message(MY_CHAT_ID, f"⏰ *21h00 rồi! Dành 3 phút nạp bài học tối nay nhé:*")
-    send_sheet_step(MY_CHAT_ID, DEFAULT_TAB, 0)
-
-def run_scheduler():
-    schedule.every().day.at("21:00").do(daily_job)
-    while True:
-        schedule.run_pending()
-        time.sleep(30)
-
-if __name__ == "__main__":
-    print(f"✅ Bot Trợ lý 2 trong 1 đang khởi động...")
-    bot.remove_webhook()
-    try:
-        me = bot.get_me()
-        BOT_USERNAME = me.username
-        print(f"🤖 Bot Username: @{BOT_USERNAME}")
-    except Exception as e:
-        print(f"Lỗi: {e}")
-
-    t_web = threading.Thread(target=run_dummy_server)
-    t_web.daemon = True
-    t_web.start()
-
-    t_sched = threading.Thread(target=run_scheduler)
-    t_sched.daemon = True
-    t_sched.start()
-
-    bot.infinity_polling()
+        if str(chat_id)

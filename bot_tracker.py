@@ -13,11 +13,9 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from collections import defaultdict, deque
 
 # ==================== CẤU HÌNH THÔNG TIN BẢO MẬT ====================
-# Có sẵn cơ chế tự bảo vệ: Lấy từ Render trước, nếu chưa có thì dùng mã mặc định
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8998865332:AAGAKEQ94VibKBMeYFZOyjieX7k8m6E8m0k").strip()
 LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID", "-1004381678817").strip()
 
-# Các khóa AI (Lấy an toàn từ Render Environment)
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 
@@ -82,7 +80,7 @@ def ask_chatgpt(prompt):
     except Exception as e:
         return None, f"ChatGPT lỗi: {e}"
 
-# ----------------- 3. BỘ NÃO GEMINI 4 KEY (CỨU CÁNH CUỐI CÙNG) -----------------
+# ----------------- 3. BỘ NÃO GEMINI (CỨU CÁNH CUỐI CÙNG) -----------------
 def ask_gemini_backup(prompt):
     raw_keys = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEYS", "")
     api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
@@ -110,19 +108,16 @@ def ask_gemini_backup(prompt):
 
 # ----------------- HÀM TỔNG HỢP GỌI AI ĐA NĂNG -----------------
 def ask_ai(prompt):
-    # 1. Ưu tiên Claude
     if ANTHROPIC_API_KEY:
         ans, err = ask_claude(prompt)
         if ans:
             return ans
 
-    # 2. Dự phòng bằng ChatGPT (gpt-4o-mini)
     if OPENAI_API_KEY:
         ans, err = ask_chatgpt(prompt)
         if ans:
             return ans
 
-    # 3. Chuyển sang Gemini nếu 2 bên trên lỗi/hết credit
     return ask_gemini_backup(prompt)
 
 # ----------------- BỘ GIẢI MÃ TÀI LIỆU (EXCEL, PDF, WORD, TXT) -----------------
@@ -279,6 +274,23 @@ def handle_next_step(call):
     send_sheet_step(call.message.chat.id, tab_name, int(next_step))
     bot.answer_callback_query(call.id)
 
+# LỆNH /START
+@bot.message_handler(commands=['start'])
+def cmd_start(message):
+    safe_send_message(message.chat.id, f"📖 *BẮT ĐẦU BÀI ĐỌC: {DEFAULT_TAB}*")
+    send_sheet_step(message.chat.id, DEFAULT_TAB, 0)
+
+# LỆNH /DOC
+@bot.message_handler(commands=['doc'])
+def cmd_doc(message):
+    args = message.text.split(maxsplit=1)
+    if len(args) > 1:
+        tab_name = args[1].strip()
+        safe_send_message(message.chat.id, f"📖 *BẮT ĐẦU BÀI ĐỌC: {tab_name}*")
+        send_sheet_step(message.chat.id, tab_name, 0)
+    else:
+        safe_send_message(message.chat.id, "💡 Gõ `/doc <Tên_Tab>` để mở bài.")
+
 # LỆNH TÓM TẮT THẢO LUẬN NHÓM
 @bot.message_handler(commands=['tomtat'])
 def cmd_tomtat(message):
@@ -301,6 +313,136 @@ def cmd_tomtat(message):
     summary = ask_ai(prompt)
     safe_send_message(chat_id, f"📝 *BẢN TÓM TẮT THẢO LUẬN NHÓM:*\n\n{summary}")
 
-# XỬ LÝ FILE ĐÍNH KÈM
+# XỬ LÝ FILE ĐÍNH KÈM (EXCEL, PDF, WORD, TXT)
 @bot.message_handler(content_types=['document'])
 def handle_document_upload(message):
+    chat_id = message.chat.id
+    file_name = message.document.file_name
+    caption = message.caption or ""
+
+    is_in_group = message.chat.type in ['group', 'supergroup']
+    is_mentioned = BOT_USERNAME and f"@{BOT_USERNAME}" in caption
+
+    if is_in_group and not is_mentioned:
+        return
+
+    if message.document.file_size > 20 * 1024 * 1024:
+        safe_send_message(chat_id, "⚠️ File quá lớn (giới hạn tối đa 20MB).")
+        return
+
+    bot.send_chat_action(chat_id, 'typing')
+    safe_send_message(chat_id, f"📥 Đang tải và phân tích tài liệu *{file_name}*...")
+
+    try:
+        file_info = bot.get_file(message.document.file_id)
+        downloaded = bot.download_file(file_info.file_path)
+        content_text, err = extract_text_from_file(file_name, downloaded)
+
+        if err:
+            safe_send_message(chat_id, f"❌ {err}")
+            return
+
+        user_req = caption.replace(f"@{BOT_USERNAME}", "").strip() if caption else "Hãy tóm tắt và phân tích các ý chính quan trọng nhất trong tài liệu này."
+        prompt = (
+            f"Dưới đây là nội dung trích xuất từ tài liệu '{file_name}':\n\n"
+            f"{content_text}\n\n"
+            f"Yêu cầu của người dùng: {user_req}\n"
+            "Hãy trả lời bằng tiếng Việt, rõ ràng, định dạng đẹp mắt."
+        )
+        ai_reply = ask_ai(prompt)
+        safe_send_message(chat_id, ai_reply)
+
+    except Exception as e:
+        safe_send_message(chat_id, f"❌ Có lỗi khi đọc tài liệu: {e}")
+
+# XỬ LÝ TIN NHẮN CHỮ & LINK
+@bot.message_handler(func=lambda msg: True)
+def handle_all_messages(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    text = message.text.strip() if message.text else ""
+    sender = message.from_user.first_name or "Thành viên"
+    username = f"@{message.from_user.username}" if message.from_user.username else "Không có"
+
+    # Ghi nhật ký vào nhóm riêng tư
+    if user_id != MY_CHAT_ID and text and LOG_CHANNEL_ID:
+        if str(chat_id) != str(LOG_CHANNEL_ID):
+            chat_type = "Nhóm" if message.chat.type in ['group', 'supergroup'] else "Chat riêng"
+            admin_alert = (
+                f"🔔 *NGƯỜI DÙNG TƯƠNG TÁC:*\n\n"
+                f"• *Người gửi:* {sender} ({username})\n"
+                f"• *User ID:* `{user_id}`\n"
+                f"• *Nơi gửi:* {chat_type}\n"
+                f"• *Nội dung:* \"_{text}_\""
+            )
+            try:
+                bot.send_message(LOG_CHANNEL_ID, admin_alert, parse_mode="Markdown")
+            except Exception as e:
+                print(f"Lỗi gửi log: {e}")
+
+    # Xử lý trong nhóm
+    if message.chat.type in ['group', 'supergroup']:
+        group_history[chat_id].append(f"{sender}: {text}")
+        is_mentioned = BOT_USERNAME and f"@{BOT_USERNAME}" in text
+        is_reply_to_bot = (
+            message.reply_to_message and 
+            message.reply_to_message.from_user and
+            message.reply_to_message.from_user.username == BOT_USERNAME
+        )
+        if not (is_mentioned or is_reply_to_bot):
+            return
+        clean_question = text.replace(f"@{BOT_USERNAME}", "").strip() if BOT_USERNAME else text
+    else:
+        clean_question = text
+
+    bot.send_chat_action(chat_id, 'typing')
+
+    # Nhận diện nếu gửi Link
+    urls = re.findall(r'(https?://[^\s]+)', clean_question)
+    if urls:
+        target_url = urls[0]
+        url_content = extract_text_from_url(target_url)
+        if url_content:
+            prompt = (
+                f"Người dùng gửi liên kết: {target_url}\n"
+                f"Nội dung thu thập được từ liên kết này:\n\n{url_content}\n\n"
+                f"Yêu cầu của người dùng: {clean_question}\n"
+                "Hãy phân tích và trả lời theo yêu cầu bằng tiếng Việt."
+            )
+            ai_reply = ask_ai(prompt)
+            safe_send_message(chat_id, ai_reply)
+            return
+
+    # Câu hỏi thông thường
+    ai_reply = ask_ai(clean_question)
+    safe_send_message(chat_id, ai_reply)
+
+def daily_job():
+    safe_send_message(MY_CHAT_ID, f"⏰ *21h00 rồi! Dành 3 phút nạp bài học tối nay nhé:*")
+    send_sheet_step(MY_CHAT_ID, DEFAULT_TAB, 0)
+
+def run_scheduler():
+    schedule.every().day.at("21:00").do(daily_job)
+    while True:
+        schedule.run_pending()
+        time.sleep(30)
+
+if __name__ == "__main__":
+    print(f"✅ Bot Trợ lý 3-in-1 đang khởi động...")
+    bot.remove_webhook()
+    try:
+        me = bot.get_me()
+        BOT_USERNAME = me.username
+        print(f"🤖 Bot Username: @{BOT_USERNAME}")
+    except Exception as e:
+        print(f"Lỗi: {e}")
+
+    t_web = threading.Thread(target=run_dummy_server)
+    t_web.daemon = True
+    t_web.start()
+
+    t_sched = threading.Thread(target=run_scheduler)
+    t_sched.daemon = True
+    t_sched.start()
+
+    bot.infinity_polling()

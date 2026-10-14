@@ -16,10 +16,10 @@ from collections import defaultdict, deque
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8998865332:AAGAKEQ94VibKBMeYFZOyjieX7k8m6E8m0k").strip()
 LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID", "-1004381678817").strip()
 
-# Các khóa AI
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+# Các khóa AI (Lấy an toàn từ Render Environment)
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 
 MY_CHAT_ID = 5693795211
 SHEET_ID = "1IlNNxjZaqPzGObPXgkB6UQ7VAC9aBiDr5qDV_3yxksE"
@@ -30,7 +30,85 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 group_history = defaultdict(lambda: deque(maxlen=100))
 BOT_USERNAME = ""
 
-# ----------------- 1. BỘ NÃO GROQ (LLAMA 3.3 70B - MIỄN PHÍ & SIÊU TỐC) -----------------
+# ----------------- 1. BỘ NÃO CLAUDE (ƯU TIÊN SỐ 1) -----------------
+def ask_claude(prompt):
+    if not ANTHROPIC_API_KEY:
+        return None, "Chưa có ANTHROPIC_API_KEY"
+    url = "https://api.anthropic.com/v1/messages"
+    headers = {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json"
+    }
+    payload = {
+        "model": "claude-3-5-haiku-20241022",
+        "max_tokens": 1500,
+        "messages": [{"role": "user", "content": prompt}]
+    }
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=35)
+        if res.status_code == 200:
+            return res.json()["content"][0]["text"].strip(), None
+        else:
+            err = res.json().get("error", {}).get("message", res.text)
+            return None, f"Claude HTTP {res.status_code}: {err}"
+    except Exception as e:
+        return None, f"Claude lỗi: {e}"
+
+# ----------------- 2. BỘ NÃO CHATGPT (DỰ PHÒNG SỐ 2) -----------------
+def ask_chatgpt(prompt):
+    if not OPENAI_API_KEY:
+        return None, "Chưa có OPENAI_API_KEY"
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": [
+            {"role": "system", "content": "Bạn là trợ lý thông minh, hỗ trợ nhiệt tình bằng tiếng Việt súc tích, thực tế, định dạng đẹp."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.7
+    }
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=30)
+        if res.status_code == 200:
+            return res.json()["choices"][0]["message"]["content"].strip(), None
+        else:
+            err = res.json().get("error", {}).get("message", res.text)
+            return None, f"ChatGPT HTTP {res.status_code}: {err}"
+    except Exception as e:
+        return None, f"ChatGPT lỗi: {e}"
+
+# ----------------- 3. BỘ NÃO GEMINI 4 KEY (DỰ PHÒNG SỐ 3) -----------------
+def ask_gemini_backup(prompt):
+    raw_keys = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEYS", "")
+    api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+    if not api_keys:
+        return None, "Chưa cấu hình GEMINI_API_KEY"
+
+    models = ["gemini-3.6-flash", "gemini-3.8-flash"]
+    for current_key in api_keys:
+        for model_name in models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={current_key}"
+            headers = {"Content-Type": "application/json", "x-goog-api-key": current_key}
+            payload = {"contents": [{"parts": [{"text": prompt}]}]}
+            try:
+                res = requests.post(url, headers=headers, json=payload, timeout=30)
+                if res.status_code == 200:
+                    data = res.json()
+                    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                    texts = [p.get("text", "") for p in parts if not p.get("thought", False)]
+                    ans = "".join(texts).strip()
+                    if ans:
+                        return ans, None
+            except Exception:
+                continue
+    return None, "Gemini quá tải hoặc hết hạn mức"
+
+# ----------------- 4. BỘ NÃO GROQ (CỨU CÁNH CUỐI CÙNG - MIỄN PHÍ & KHÔNG NGHẼN) -----------------
 def ask_groq(prompt):
     if not GROQ_API_KEY:
         return None, "Chưa cấu hình GROQ_API_KEY"
@@ -57,82 +135,37 @@ def ask_groq(prompt):
     except Exception as e:
         return None, f"Groq lỗi: {e}"
 
-# ----------------- 2. BỘ NÃO CLAUDE -----------------
-def ask_claude(prompt):
-    if not ANTHROPIC_API_KEY:
-        return None, "Chưa có ANTHROPIC_API_KEY"
-    url = "https://api.anthropic.com/v1/messages"
-    headers = {
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json"
-    }
-    payload = {
-        "model": "claude-3-5-haiku-20241022",
-        "max_tokens": 1500,
-        "messages": [{"role": "user", "content": prompt}]
-    }
-    try:
-        res = requests.post(url, headers=headers, json=payload, timeout=30)
-        if res.status_code == 200:
-            return res.json()["content"][0]["text"].strip(), None
-        else:
-            err = res.json().get("error", {}).get("message", res.text)
-            return None, f"Claude HTTP {res.status_code}: {err}"
-    except Exception as e:
-        return None, f"Claude lỗi: {e}"
-
-# ----------------- 3. BỘ NÃO CHATGPT -----------------
-def ask_chatgpt(prompt):
-    if not OPENAI_API_KEY:
-        return None, "Chưa có OPENAI_API_KEY"
-    url = "https://api.openai.com/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "gpt-4o-mini",
-        "messages": [
-            {"role": "system", "content": "Bạn là trợ lý thông minh, trả lời tiếng Việt súc tích, thực tế."},
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.7
-    }
-    try:
-        res = requests.post(url, headers=headers, json=payload, timeout=30)
-        if res.status_code == 200:
-            return res.json()["choices"][0]["message"]["content"].strip(), None
-        else:
-            err = res.json().get("error", {}).get("message", res.text)
-            return None, f"ChatGPT HTTP {res.status_code}: {err}"
-    except Exception as e:
-        return None, f"ChatGPT lỗi: {e}"
-
-# ----------------- HÀM TỔNG HỢP (ƯU TIÊN GROQ -> CLAUDE -> CHATGPT) -----------------
+# ----------------- HÀM TỔNG HỢP: CLAUDE -> CHATGPT -> GEMINI -> GROQ (CUỐI) -----------------
 def ask_ai(prompt):
     errors = []
 
-    # 1. Ưu tiên Groq (Llama 3.3 70B - Cực nhanh, miễn phí, không nghẽn)
-    if GROQ_API_KEY:
-        ans, err = ask_groq(prompt)
-        if ans:
-            return ans
-        errors.append(f"• Groq: {err}")
-
-    # 2. Dự phòng Claude
+    # 1. Ưu tiên số 1: Claude (Văn phong mượt mà, sâu sắc)
     if ANTHROPIC_API_KEY:
         ans, err = ask_claude(prompt)
         if ans:
             return ans
         errors.append(f"• Claude: {err}")
 
-    # 3. Dự phòng ChatGPT
+    # 2. Dự phòng số 2: ChatGPT (gpt-4o-mini)
     if OPENAI_API_KEY:
         ans, err = ask_chatgpt(prompt)
         if ans:
             return ans
         errors.append(f"• ChatGPT: {err}")
+
+    # 3. Dự phòng số 3: Gemini (4 Key)
+    ans, err = ask_gemini_backup(prompt)
+    if ans:
+        return ans
+    if err:
+        errors.append(f"• Gemini: {err}")
+
+    # 4. CỨU CÁNH CUỐI CÙNG: Groq (Llama 3.3 70B - Siêu tốc, không nghẽn)
+    if GROQ_API_KEY:
+        ans, err = ask_groq(prompt)
+        if ans:
+            return ans
+        errors.append(f"• Groq: {err}")
 
     return "❌ Báo cáo trạng thái AI:\n" + "\n".join(errors)
 
@@ -238,7 +271,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot AI Ultra is running 24/7!")
+        self.wfile.write(b"Bot AI 4-in-1 is running 24/7!")
 
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
@@ -444,7 +477,7 @@ def run_scheduler():
         time.sleep(30)
 
 if __name__ == "__main__":
-    print(f"✅ Bot Trợ lý AI Đỉnh Cao đang chạy...")
+    print(f"✅ Bot Trợ lý AI (Claude -> ChatGPT -> Gemini -> Groq) đang chạy...")
     bot.remove_webhook()
     try:
         me = bot.get_me()

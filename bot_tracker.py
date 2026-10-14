@@ -106,19 +106,35 @@ def ask_gemini_backup(prompt):
                 continue
     return "⚠️ Cả Claude, ChatGPT và Gemini đều đang bận, bạn vui lòng gửi lại sau 10 giây nhé!"
 
-# ----------------- HÀM TỔNG HỢP GỌI AI ĐA NĂNG -----------------
+# ----------------- HÀM TỔNG HỢP GỌI AI (HIỂN THỊ CHI TIẾT LỖI TỪNG BÊN) -----------------
 def ask_ai(prompt):
+    error_reports = []
+
+    # 1. Thử gọi Claude
     if ANTHROPIC_API_KEY:
         ans, err = ask_claude(prompt)
         if ans:
             return ans
+        error_reports.append(f"• Claude: {err}")
+    else:
+        error_reports.append("• Claude: Chưa cấu hình ANTHROPIC_API_KEY trên Render")
 
+    # 2. Thử gọi ChatGPT (gpt-4o-mini)
     if OPENAI_API_KEY:
         ans, err = ask_chatgpt(prompt)
         if ans:
             return ans
+        error_reports.append(f"• ChatGPT: {err}")
+    else:
+        error_reports.append("• ChatGPT: Chưa cấu hình OPENAI_API_KEY trên Render")
 
-    return ask_gemini_backup(prompt)
+    # 3. Thử gọi Gemini (4 Key dự phòng)
+    ans = ask_gemini_backup(prompt)
+    if not ans.startswith("⚠️"):
+        return ans
+    error_reports.append("• Gemini: Cả 4 Key đều quá tải 503 hoặc hết hạn mức")
+
+    return "❌ Báo cáo trạng thái các hệ thống AI:\n\n" + "\n".join(error_reports)
 
 # ----------------- BỘ GIẢI MÃ TÀI LIỆU (EXCEL, PDF, WORD, TXT) -----------------
 def extract_text_from_file(file_name, file_bytes):

@@ -108,7 +108,7 @@ def ask_gemini_backup(prompt):
                 continue
     return None, "Gemini quá tải hoặc hết hạn mức"
 
-# ----------------- 4. BỘ NÃO GROQ (CỨU CÁNH CUỐI CÙNG - MIỄN PHÍ & KHÔNG NGHẼN) -----------------
+# ----------------- 1. BỘ NÃO GROQ (LLAMA 3.1 8B INSTANT - MIỄN PHÍ & SIÊU TỐC) -----------------
 def ask_groq(prompt):
     if not GROQ_API_KEY:
         return None, "Chưa cấu hình GROQ_API_KEY"
@@ -117,24 +117,30 @@ def ask_groq(prompt):
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
-    payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [
-            {"role": "system", "content": "Bạn là trợ lý thông minh, am hiểu tâm lý, đồng hành phát triển bản thân. Trả lời bằng tiếng Việt sâu sắc, thực tế, định dạng rõ ràng."},
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.7
-    }
-    try:
-        res = requests.post(url, headers=headers, json=payload, timeout=25)
-        if res.status_code == 200:
-            return res.json()["choices"][0]["message"]["content"].strip(), None
-        else:
-            err = res.json().get("error", {}).get("message", res.text)
-            return None, f"Groq HTTP {res.status_code}: {err}"
-    except Exception as e:
-        return None, f"Groq lỗi: {e}"
-
+    
+    # Các mô hình miễn phí đang hoạt động 100% trên Groq
+    groq_models = ["llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+    last_err = ""
+    
+    for model_name in groq_models:
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": "Bạn là trợ lý thông minh, am hiểu tâm lý, đồng hành phát triển bản thân. Trả lời bằng tiếng Việt sâu sắc, thực tế, định dạng rõ ràng."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.7
+        }
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=25)
+            if res.status_code == 200:
+                return res.json()["choices"][0]["message"]["content"].strip(), None
+            else:
+                last_err = res.json().get("error", {}).get("message", res.text)
+        except Exception as e:
+            last_err = str(e)
+            
+    return None, f"Groq ({groq_models[0]}): {last_err}"
 # ----------------- HÀM TỔNG HỢP: CLAUDE -> CHATGPT -> GEMINI -> GROQ (CUỐI) -----------------
 def ask_ai(prompt):
     errors = []

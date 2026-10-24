@@ -272,12 +272,16 @@ def safe_send_message(chat_id, text, reply_markup=None):
             except Exception:
                 bot.send_message(chat_id, part, reply_markup=markup)
 
-# Máy chủ web Render giữ kết nối 24/7
+# Máy chủ web Render giữ kết nối 24/7 (Hỗ trợ cả lệnh HEAD và GET)
 class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot AI 4-in-1 is running 24/7!")
+        self.wfile.write(b"OK")
 
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
